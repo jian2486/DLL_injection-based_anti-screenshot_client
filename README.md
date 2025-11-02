@@ -1,0 +1,1 @@
+这个工具注入的dll由icer233的DisplayAffinityManager项目生产，在此基础上进行了封装和扩展，增加了界面和更多功能，原项目地址：https://github.com/icer233/AntiScreenshotManager
