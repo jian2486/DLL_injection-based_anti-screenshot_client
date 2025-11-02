@@ -1,28 +1,17 @@
 import sys
 import os
 import json
-try:
-    import psutil
-    import win32gui
-    import win32process
-    import win32con
-    import win32api
-except ImportError as e:
-    print(f"导入模块失败: {e}")
-    print("请安装所需的依赖包:")
-    print("pip install psutil pywin32")
-    sys.exit(1)
-
+import psutil
+import win32gui
+import win32process
 import customtkinter as ctk
-from tkinter import messagebox, simpledialog
+from tkinter import simpledialog
 import tkinter as tk
-from tkinter import ttk
 import threading
-import time
-import queue
 import ctypes
 import ctypes.wintypes
 from ctypes import wintypes
+import shutil
 
 # 添加对injector库的支持
 sys.path.append(os.path.join(os.path.dirname(__file__), 'injector'))
@@ -174,10 +163,10 @@ class DLLInjector:
         architecture = self._get_process_architecture(process_id)
         
         # 基础DLL目录
-        # 处理PyInstaller打包环境
+        # 处理PyInstaller打包环境 - 使用程序同目录
         if hasattr(sys, '_MEIPASS'):
-            # 在打包环境中
-            base_dll_dir = os.path.join(sys._MEIPASS, "dll")
+            # 在打包环境中，使用程序同目录
+            base_dll_dir = os.path.join(os.path.dirname(sys.executable), "dll")
         else:
             # 在开发环境中
             base_dll_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dll")
@@ -199,10 +188,65 @@ class DLLInjector:
             print(f"无法确定进程 {process_id} 的架构，使用默认DLL路径")
         
         # 如果无法确定架构或对应DLL不存在，使用默认路径
-        default_dll_path = os.path.join(base_dll_dir, dll_name)
-        print(f"使用默认DLL路径: {default_dll_path}")
-        return default_dll_path
+        # 默认使用x64版本DLL（大多数现代系统都是64位）
+        default_arch = "x64"
+        default_dll_path = os.path.join(base_dll_dir, default_arch, dll_name)
+        if os.path.exists(default_dll_path):
+            print(f"使用默认架构({default_arch})的DLL路径: {default_dll_path}")
+            return default_dll_path
+            
+        # 最后的备选方案
+        fallback_path = os.path.join(base_dll_dir, dll_name)
+        print(f"使用最终备选DLL路径: {fallback_path}")
+        return fallback_path
 
+    def _extract_dll_files_if_needed(self):
+        """
+        如果需要，将DLL文件从打包程序中解压到程序同目录
+        """
+        # 检查目标DLL目录是否已存在
+        target_dll_dir = os.path.join(os.path.dirname(sys.executable), "dll")
+        if os.path.exists(target_dll_dir):
+            # 检查必要的子目录是否存在
+            x86_dir = os.path.join(target_dll_dir, "x86")
+            x64_dir = os.path.join(target_dll_dir, "x64")
+            if os.path.exists(x86_dir) and os.path.exists(x64_dir):
+                print("DLL架构目录已存在，跳过解压")
+                return
+        
+        # 创建目标目录
+        os.makedirs(target_dll_dir, exist_ok=True)
+        
+        # 从打包资源中复制DLL文件
+        source_dll_dir = os.path.join(sys._MEIPASS, "dll")
+        if os.path.exists(source_dll_dir):
+            print(f"正在将DLL文件从 {source_dll_dir} 复制到 {target_dll_dir}")
+            try:
+                # 分别复制x86和x64目录
+                source_x86_dir = os.path.join(source_dll_dir, "x86")
+                source_x64_dir = os.path.join(source_dll_dir, "x64")
+                target_x86_dir = os.path.join(target_dll_dir, "x86")
+                target_x64_dir = os.path.join(target_dll_dir, "x64")
+                
+                if os.path.exists(source_x86_dir):
+                    os.makedirs(target_x86_dir, exist_ok=True)
+                    for file in os.listdir(source_x86_dir):
+                        source_file = os.path.join(source_x86_dir, file)
+                        target_file = os.path.join(target_x86_dir, file)
+                        shutil.copy2(source_file, target_file)
+                
+                if os.path.exists(source_x64_dir):
+                    os.makedirs(target_x64_dir, exist_ok=True)
+                    for file in os.listdir(source_x64_dir):
+                        source_file = os.path.join(source_x64_dir, file)
+                        target_file = os.path.join(target_x64_dir, file)
+                        shutil.copy2(source_file, target_file)
+                
+                print("DLL文件解压完成")
+            except Exception as e:
+                print(f"解压DLL文件时出错: {e}")
+        else:
+            print(f"源DLL目录不存在: {source_dll_dir}")
     def inject_dll(self, process_id, dll_path):
         """
         向指定进程注入DLL
@@ -427,10 +471,10 @@ class DLLInjector:
     def inject_affinity_hide_dll(self, process_id):
         """
         向指定进程注入AffinityHide.dll (模式二)
-        
+
         Args:
             process_id (int): 目标进程ID
-            
+
         Returns:
             bool: 注入是否成功
         """
@@ -559,14 +603,9 @@ class WindowLoader:
 
 class UIComponents:
     """界面组件类，负责创建和管理UI元素"""
-    
+
     def __init__(self, main_window):
-        """
-        初始化UI组件
-        
-        Args:
-            main_window: 主窗口实例
-        """
+        """初始化UI组件"""
         self.main_window = main_window
         
     def create_main_layout(self):
@@ -902,19 +941,23 @@ class UIComponents:
         
     def create_about_tab(self):
         """创建关于标签页"""
-        about_label = ctk.CTkLabel(self.main_window.about_tab, text="反截屏管理程序", font=ctk.CTkFont(size=16, weight="bold"))
-        about_label.pack(pady=(5, 2))
+        # 创建一个滚动框架来容纳关于内容
+        about_scrollable_frame = ctk.CTkScrollableFrame(self.main_window.about_tab)
+        about_scrollable_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
-        version_label = ctk.CTkLabel(self.main_window.about_tab, text="版本 1.0")
-        version_label.pack()
+        about_label = ctk.CTkLabel(about_scrollable_frame, text="反截屏管理程序", font=ctk.CTkFont(size=14, weight="bold"))
+        about_label.pack(pady=(3, 1))
         
-        description_label = ctk.CTkLabel(self.main_window.about_tab, text="基于Windows Display Affinity技术和DLL注入的进程窗口反截屏保护工具")
-        description_label.pack(pady=3)
+        version_label = ctk.CTkLabel(about_scrollable_frame, text="版本 1.0")
+        version_label.pack(pady=1)
         
-        features_label = ctk.CTkLabel(self.main_window.about_tab, text="\n核心技术特性：", font=ctk.CTkFont(weight="bold"))
-        features_label.pack(anchor="w", padx=10)
+        description_label = ctk.CTkLabel(about_scrollable_frame, text="基于Windows Display Affinity技术和DLL注入的进程窗口反截屏保护工具")
+        description_label.pack(pady=1)
         
-        feature_list = ctk.CTkLabel(self.main_window.about_tab, text=
+        features_label = ctk.CTkLabel(about_scrollable_frame, text="核心技术特性：", font=ctk.CTkFont(weight="bold"))
+        features_label.pack(anchor="w", padx=5, pady=(5, 1))
+        
+        feature_list = ctk.CTkLabel(about_scrollable_frame, text=
             "- 基于DLL注入技术实现反截屏保护\n"
             "- 使用多种Affinity DLL防止屏幕录制\n"
             "- 支持进程级和窗口级精细控制\n"
@@ -922,25 +965,25 @@ class UIComponents:
             "- 支持配置持久化和主题切换\n"
             "- 使用psutil库进行系统进程管理",
             justify="left", anchor="w")
-        feature_list.pack(padx=10, pady=3, anchor="w")
+        feature_list.pack(padx=10, pady=1, anchor="w")
         
         # 添加DLL说明
-        dll_label = ctk.CTkLabel(self.main_window.about_tab, text="\nDLL功能说明：", font=ctk.CTkFont(weight="bold"))
-        dll_label.pack(anchor="w", padx=10)
+        dll_label = ctk.CTkLabel(about_scrollable_frame, text="DLL功能说明：", font=ctk.CTkFont(weight="bold"))
+        dll_label.pack(anchor="w", padx=5, pady=(5, 1))
         
-        dll_list = ctk.CTkLabel(self.main_window.about_tab, text=
+        dll_list = ctk.CTkLabel(about_scrollable_frame, text=
             "- AffinityHide.dll: 模式二反截屏保护\n"
             "- AffinityTrans.dll: 模式一反截屏保护\n"
             "- AffinityUnhide.dll: 取消反截屏保护\n"
             "- AffinityStatus.dll: 检查进程保护状态",
             justify="left", anchor="w")
-        dll_list.pack(padx=10, pady=3, anchor="w")
-        
+        dll_list.pack(padx=10, pady=1, anchor="w")
+
         # 添加技术说明
-        tech_label = ctk.CTkLabel(self.main_window.about_tab, text="\n技术说明", font=ctk.CTkFont(size=14, weight="bold"))
-        tech_label.pack(pady=(10, 2), anchor="w", padx=10)
-        
-        tech_text = ctk.CTkLabel(self.main_window.about_tab, text=
+        tech_label = ctk.CTkLabel(about_scrollable_frame, text="技术说明", font=ctk.CTkFont(size=12, weight="bold"))
+        tech_label.pack(pady=(5, 1), anchor="w", padx=5)
+
+        tech_text = ctk.CTkLabel(about_scrollable_frame, text=
             "1. 利用Windows API实现DLL远程注入\n"
             "2. 通过DLL中的SetWindowDisplayAffinity API设置窗口属性\n"
             "3. 使用FindWindowEx遍历系统窗口句柄\n"
@@ -948,10 +991,25 @@ class UIComponents:
             "5. JSON格式配置文件存储用户设置\n"
             "6. 基于CustomTkinter现代UI框架构建",
             justify="left", anchor="w")
-        tech_text.pack(padx=10, pady=3, anchor="w")
-    
-    # 已移除白名单功能
-    pass
+        tech_text.pack(padx=10, pady=1, anchor="w")
+
+
+        tech_label = ctk.CTkLabel(about_scrollable_frame, text="关于", font=ctk.CTkFont(size=12, weight="bold"))
+        tech_label.pack(pady=(5, 1), anchor="w", padx=5)
+
+
+
+        tech_label = ctk.CTkLabel(about_scrollable_frame, text="关于", font=ctk.CTkFont(size=12, weight="bold"))
+        tech_label.pack(pady=(5, 1), anchor="w", padx=5)
+
+        tech_text = ctk.CTkLabel(about_scrollable_frame, text=
+            "这个工具注入的dll由icer233的DisplayAffinityManager项目生产，在此感谢icer233\n"
+            "在此基础上进行了封装和扩展，增加了界面和更多功能\n"
+            "原项目地址：https://github.com/icer233/AntiScreenshotManager\n"
+            "二次开发作者在bilibili上名简朴无谓，欢迎关注",
+            justify="left", anchor="w")
+        tech_text.pack(padx=10, pady=1, anchor="w")
+
 
 class MainWindow(ctk.CTk):
     def __init__(self):
@@ -959,8 +1017,10 @@ class MainWindow(ctk.CTk):
         
         # 配置窗口
         self.title("反截屏管理程序")
-        self.geometry("1200x700")  # 增加窗口宽度从900到1200
+        self.geometry("1000x700")
 
+        # 在初始化时解压DLL文件（如果需要）
+        self._extract_dll_files_if_needed()
         
         # 使用DLL注入方式替代原有的反截屏功能
         # 添加全屏反截屏状态跟踪
@@ -992,7 +1052,54 @@ class MainWindow(ctk.CTk):
         self.after(100, self.initial_refresh)
         
         # 移除白名单相关的变量初始化，因为我们已移除白名单功能
+
+    def _extract_dll_files_if_needed(self):
+        """
+        如果需要，将DLL文件从打包程序中解压到程序同目录
+        """
+        # 检查目标DLL目录是否已存在
+        target_dll_dir = os.path.join(os.path.dirname(sys.executable), "dll")
+        if os.path.exists(target_dll_dir):
+            # 检查必要的子目录是否存在
+            x86_dir = os.path.join(target_dll_dir, "x86")
+            x64_dir = os.path.join(target_dll_dir, "x64")
+            if os.path.exists(x86_dir) and os.path.exists(x64_dir):
+                print("DLL架构目录已存在，跳过解压")
+                return
         
+        # 创建目标目录
+        os.makedirs(target_dll_dir, exist_ok=True)
+        
+        # 从打包资源中复制DLL文件
+        source_dll_dir = os.path.join(sys._MEIPASS, "dll")
+        if os.path.exists(source_dll_dir):
+            print(f"正在将DLL文件从 {source_dll_dir} 复制到 {target_dll_dir}")
+            try:
+                # 分别复制x86和x64目录
+                source_x86_dir = os.path.join(source_dll_dir, "x86")
+                source_x64_dir = os.path.join(source_dll_dir, "x64")
+                target_x86_dir = os.path.join(target_dll_dir, "x86")
+                target_x64_dir = os.path.join(target_dll_dir, "x64")
+                
+                if os.path.exists(source_x86_dir):
+                    os.makedirs(target_x86_dir, exist_ok=True)
+                    for file in os.listdir(source_x86_dir):
+                        source_file = os.path.join(source_x86_dir, file)
+                        target_file = os.path.join(target_x86_dir, file)
+                        shutil.copy2(source_file, target_file)
+                
+                if os.path.exists(source_x64_dir):
+                    os.makedirs(target_x64_dir, exist_ok=True)
+                    for file in os.listdir(source_x64_dir):
+                        source_file = os.path.join(source_x64_dir, file)
+                        target_file = os.path.join(target_x64_dir, file)
+                        shutil.copy2(source_file, target_file)
+                
+                print("DLL文件解压完成")
+            except Exception as e:
+                print(f"解压DLL文件时出错: {e}")
+        else:
+            print(f"源DLL目录不存在: {source_dll_dir}")
     def init_components(self):
         """初始化所有组件"""
         # 创建左侧模式一列表
@@ -1009,36 +1116,7 @@ class MainWindow(ctk.CTk):
         
         # 创建关于标签页
         self.ui_components.create_about_tab()
-        
-    def _delayed_init_anti_screenshot_protection(self):
-        """延迟初始化程序自身的反截屏保护"""
-        self.status_label.configure(text="程序启动成功")
-        
-    def create_mode1_section(self):
-        """创建模式一列表区域"""
-        # 已在UIComponents类中定义，避免重复定义
-        pass
-        
-    def create_mode2_section(self):
-        """创建模式二列表区域"""
-        # 已在UIComponents类中定义，避免重复定义
-        pass
 
-    def create_control_tab(self):
-        """创建控制标签页"""
-        # 已在UIComponents类中定义，避免重复定义
-        pass
-        
-    def create_settings_tab(self):
-        """创建设置标签页"""
-        # 已在UIComponents类中定义，避免重复定义
-        pass
-        
-    def create_about_tab(self):
-        """创建关于标签页"""
-        # 已在UIComponents类中定义，避免重复定义
-        pass
-        
     def save_data(self, show_status=True):
         """保存数据到配置文件"""
         try:
@@ -1048,7 +1126,6 @@ class MainWindow(ctk.CTk):
                 "mode1_items": [],
                 "mode2_items": [],
                 "current_mode": self.current_mode,
-                "anti_screenshot_enabled": True,  # 程序自身反截屏功能已移除，保留配置兼容性
                 "child_process_injection_enabled": self.child_process_injection_var.get(),  # 保存子进程注入开关状态
                 "auto_start_enabled": self.auto_start_var.get()  # 保存开机自启动设置
             }
@@ -1125,7 +1202,8 @@ class MainWindow(ctk.CTk):
             # 程序自身反截屏功能已移除，忽略此配置
             # 根据配置设置反截屏功能，但仅在开关启用时才执行
             if anti_screenshot_enabled:
-                self.toggle_anti_screenshot()
+                # 程序自身反截屏功能已移除，忽略此配置
+                pass
             
             # 恢复子进程注入开关状态
             child_process_injection_enabled = config_data.get("child_process_injection_enabled", False)
@@ -1160,7 +1238,7 @@ class MainWindow(ctk.CTk):
                 
                 # 根据状态添加适当的指示器
                 if not is_enabled:
-                    display_text = "● " + item_text
+                    display_text = "●" + item_text
                     # 为禁用项设置状态属性
                     index = self.mode2_listbox.size()
                     setattr(self.mode2_listbox, f"item_{index}_status", "disabled")
@@ -1213,7 +1291,7 @@ class MainWindow(ctk.CTk):
             # 在后台线程中执行耗时操作
             threading.Thread(target=self._apply_anti_screenshot_protection_thread, args=(listbox,), daemon=True).start()
         except Exception as e:
-            self.status_label.configure(text=f"应用反截屏保护时发生错误，请查看日志")
+            self.status_label.configure(text=f"应用反截屏保护时发生错误")
             import traceback
             traceback.print_exc()
             # 重置执行状态
@@ -1240,7 +1318,7 @@ class MainWindow(ctk.CTk):
                     continue
                     
                 # 处理状态指示器
-                if text.startswith("● "):
+                if text.startswith("●"):
                     text = text[2:]
                     
                 # 处理两种格式:
@@ -1470,7 +1548,7 @@ class MainWindow(ctk.CTk):
             for i in range(listbox.size()):
                 existing_item = listbox.get(i)
                 # 去除状态指示器前缀进行比较
-                clean_existing = existing_item[2:] if existing_item.startswith("● ") else existing_item
+                clean_existing = existing_item[2:] if existing_item.startswith("●") else existing_item
 
                 if clean_existing == item_text:
                     exists = True
@@ -1486,7 +1564,7 @@ class MainWindow(ctk.CTk):
                 
                 for i in range(other_listbox.size()):
                     existing_item = other_listbox.get(i)
-                    clean_existing = existing_item[2:] if existing_item.startswith("● ") else existing_item
+                    clean_existing = existing_item[2:] if existing_item.startswith("●") else existing_item
                     if clean_existing == item_text:
                         already_exists_in_other = True
                         break
@@ -1516,7 +1594,7 @@ class MainWindow(ctk.CTk):
             # 只处理启用状态的项目
             if item_status != 'disabled':
                 # 处理状态指示器
-                if text.startswith("● "):
+                if text.startswith("●"):
                     text = text[2:]
                     
                 # 处理多种格式:
@@ -1560,7 +1638,7 @@ class MainWindow(ctk.CTk):
             # 只处理启用状态的项目
             if item_status != 'disabled':
                 # 处理状态指示器
-                if text.startswith("● "):
+                if text.startswith("●"):
                     text = text[2:]
                     
                 # 处理两种格式:
@@ -1625,7 +1703,7 @@ class MainWindow(ctk.CTk):
         item_text = listbox.get(index)
         
         # 处理状态指示器
-        if item_text.startswith("● "):
+        if item_text.startswith("●"):
             clean_text = item_text[2:]
         else:
             clean_text = item_text
@@ -1666,7 +1744,6 @@ class MainWindow(ctk.CTk):
         success = dll_injector.inject_affinity_status_dll(target_pid)
         if success:
             self.status_label.configure(text=f"已向进程 {process_name} 注入状态检查DLL")
-            # TODO: 实现状态返回值的读取和解析
             # 这里应该读取DLL返回的状态信息并更新UI
         else:
             self.status_label.configure(text=f"向进程 {process_name} 注入状态检查DLL失败")
@@ -1699,14 +1776,14 @@ class MainWindow(ctk.CTk):
         for i in range(target_listbox.size()):
             existing_item = target_listbox.get(i)
             # 去除状态指示器前缀进行比较
-            clean_existing = existing_item[2:] if existing_item.startswith("● ") else existing_item
-            clean_item_text = item_text[2:] if item_text.startswith("● ") else item_text
+            clean_existing = existing_item[2:] if existing_item.startswith("●") else existing_item
+            clean_item_text = item_text[2:] if item_text.startswith("●") else item_text
             if clean_existing == clean_item_text:
                 exists = True
                 break
                 
         if exists:
-            clean_item_text = item_text[2:] if item_text.startswith("● ") else item_text
+            clean_item_text = item_text[2:] if item_text.startswith("●") else item_text
             self.status_label.configure(text=f"项目 '{clean_item_text}' 已存在于 {target_name} 中")
             return
             
@@ -1720,7 +1797,7 @@ class MainWindow(ctk.CTk):
         setattr(target_listbox, f'item_{target_index}_status', item_status)
         
         # 更新状态栏
-        clean_text = item_text[2:] if item_text.startswith("● ") else item_text
+        clean_text = item_text[2:] if item_text.startswith("●") else item_text
         self.status_label.configure(text=f"已将 '{clean_text}' 从 {source_name} 转移到 {target_name}")
         
         # 如果项目是启用状态，则需要先取消反截屏保护，然后重新应用新模式的反截屏保护
@@ -1763,8 +1840,6 @@ class MainWindow(ctk.CTk):
                 target_pids = [pid]
             elif is_window_item:
                 # 对于窗口项目，我们需要更精确地匹配
-                # 这里简化处理，仍然查找所有同名进程
-                # 在实际应用中，可能需要通过其他方式获取特定窗口的PID
                 for proc in psutil.process_iter(['pid', 'name']):
                     try:
                         if proc.info['name'] == process_name:
@@ -1854,9 +1929,9 @@ class MainWindow(ctk.CTk):
         item_text = listbox.get(index)
         
         # 检查项目当前是否为开启状态（是否有状态指示器）
-        is_enabled = not item_text.startswith("● ") or (item_text.startswith("● ") and getattr(listbox, f'item_{index}_status', 'enabled') == 'enabled')
-        
-        if item_text.startswith("● "):
+        is_enabled = not item_text.startswith("●") or (item_text.startswith("●") and getattr(listbox, f'item_{index}_status', 'enabled') == 'enabled')
+
+        if item_text.startswith("●"):
             # 移除现有的状态指示器
             clean_text = item_text[2:]
         else:
@@ -1866,7 +1941,7 @@ class MainWindow(ctk.CTk):
             
         if is_enabled:
             # 切换到关闭状态（红点）
-            new_text = "● " + clean_text
+            new_text = "●" + clean_text
             listbox.insert(index, new_text)
             setattr(listbox, f'item_{index}_status', 'disabled')
             self.status_label.configure(text=f"'{clean_text}' 在 {mode_name} 中已关闭")
@@ -1875,7 +1950,7 @@ class MainWindow(ctk.CTk):
             threading.Thread(target=self._unhide_process_thread, args=(clean_text,), daemon=True).start()
         else:
             # 切换到开启状态（绿点）
-            new_text = "● " + clean_text
+            new_text = "●" + clean_text
             listbox.insert(index, new_text)
             setattr(listbox, f'item_{index}_status', 'enabled')
             self.status_label.configure(text=f"'{clean_text}' 在 {mode_name} 中已开启")
@@ -2159,11 +2234,7 @@ class MainWindow(ctk.CTk):
             
         # 自动保存配置
         self.save_data(show_status=False)
-        
-    def toggle_anti_screenshot(self):
-        """切换程序自身的反截屏保护"""
-        # 移除此功能，保持空实现以避免调用错误
-        self.save_data(show_status=False)
+
 
     def is_auto_start_enabled(self):
         """检查开机自启动是否已启用"""
@@ -2329,24 +2400,17 @@ class MainWindow(ctk.CTk):
         self.refresh_windows_list()
         self.show_lists_refresh = False
 
-    
-    def show_mode_list_context_menu(self, event, listbox, mode_name):
-        """显示模式列表的上下文菜单"""
-        menu = QMenu(self)
-        edit_action = menu.addAction("Edit")
-        delete_action = menu.addAction("Delete")
-        action = menu.exec_(event.globalPos())
-        if action == edit_action:
-            self.edit_mode(listbox, mode_name)
-        elif action == delete_action:
-            self.delete_mode(listbox, mode_name)
+
 
     def edit_mode(self, listbox, mode_name):
         """编辑模式"""
-        new_mode_name, ok = QInputDialog.getText(self, "Edit Mode", "Enter new mode name:", QLineEdit.Normal, mode_name)
-        if ok and new_mode_name:
-            listbox.insertItem(listbox.currentRow(), new_mode_name)
-            listbox.takeItem(listbox.currentRow() + 1)
+        # 使用CustomTkinter的输入对话框替换Qt的QInputDialog
+        new_mode_name = simpledialog.askstring("编辑模式", "请输入新的模式名称:", initialvalue=mode_name)
+        if new_mode_name:
+            # 注意：在tk.Listbox中，我们需要先删除再插入来实现更新
+            current_index = listbox.curselection()[0] if listbox.curselection() else 0
+            listbox.delete(current_index)
+            listbox.insert(current_index, new_mode_name)
             self.update_mode_list()
 
     def delete_mode(self, listbox, mode_name):
@@ -2615,12 +2679,12 @@ if __name__ == "__main__":
     # 避免在子进程中创建GUI
     import sys
     if len(sys.argv) > 1:
-        # 这是一个子进程调用，不要创建GUI
+        # 这是一个子进程调用，不创建GUI
         sys.exit(0)
         
     # 设置customtkinter的外观模式和主题
-    ctk.set_appearance_mode("Light")  # 默认设置为浅色模式以符合用户偏好
-    ctk.set_default_color_theme("blue")  # 可选: "blue", "green", "dark-blue"
+    ctk.set_appearance_mode("Light")  # 默认设置为浅色模式
+    ctk.set_default_color_theme("green")
         
     app = MainWindow()
     app.mainloop()
